@@ -1,7 +1,9 @@
 import logging
-from core.config import Config
-from data.data_fetcher import DataFetcher
-from strategies.ai_strategy import AITradingStrategy
+from dotenv import load_dotenv
+from src.core.config import Config
+from src.core.trader import SmartTrader
+from src.dashboard.trading_dashboard import TradingDashboard
+import threading
 import time
 
 # Configure logging
@@ -11,61 +13,40 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-class TradingBot:
-    def __init__(self):
-        self.config = Config()
-        self.data_fetcher = DataFetcher(self.config)
-        self.strategy = AITradingStrategy(self.config)
-        self.running = False
+def main():
+    """Main entry point for the AI Smart Trading Bot"""
+    try:
+        logger.info("Starting AI Smart Trading Bot initialization...")
 
-    def initialize(self, symbol, source='yahoo'):
-        """Initialize the trading bot with historical data"""
-        logger.info(f"Initializing trading bot for {symbol} using {source}")
-        historical_data = self.data_fetcher.get_historical_data(symbol, source=source)
-        self.strategy.train(historical_data)
-        return historical_data
+        # Load environment variables
+        logger.info("Loading environment variables...")
+        load_dotenv()
 
-    def execute_trade(self, symbol, action, size):
-        """Execute trading action"""
-        logger.info(f"Executing {action} order for {symbol}, size: {size}")
-        # Implement actual trading logic here using exchange APIs
-        pass
+        # Initialize configuration
+        logger.info("Initializing configuration...")
+        try:
+            config = Config()
+            logger.info("Configuration initialized successfully")
+        except Exception as config_error:
+            logger.error(f"Failed to initialize configuration: {str(config_error)}")
+            raise
 
-    def run(self, symbol, source='yahoo', interval=60):
-        """Run the trading bot"""
-        self.running = True
-        historical_data = self.initialize(symbol, source)
+        # Initialize dashboard
+        logger.info("Initializing dashboard...")
+        try:
+            dashboard = TradingDashboard()
+            logger.info("Dashboard initialized successfully")
+        except Exception as dashboard_error:
+            logger.error(f"Failed to initialize dashboard: {str(dashboard_error)}")
+            raise
 
-        while self.running:
-            try:
-                # Get current price
-                current_price = self.data_fetcher.get_realtime_price(symbol, source)
+        # Start the dashboard server
+        logger.info("Starting dashboard server on http://0.0.0.0:8050...")
+        dashboard.run(debug=True, host='0.0.0.0', port=8050)
 
-                # Update data and generate signals
-                latest_data = historical_data.copy()
-                latest_data.loc[time.time()] = [current_price] * len(latest_data.columns)
-                signals = self.strategy.generate_signals(latest_data)
-
-                # Get trading decision
-                decision = self.strategy.should_trade(current_price, balance=10000)  # Example balance
-
-                if decision['action'] != 'hold':
-                    self.execute_trade(symbol, decision['action'], decision['size'])
-
-                time.sleep(interval)
-
-            except Exception as e:
-                logger.error(f"Error in trading loop: {str(e)}")
-                time.sleep(interval)
-
-    def stop(self):
-        """Stop the trading bot"""
-        self.running = False
-        logger.info("Trading bot stopped")
+    except Exception as e:
+        logger.error(f"Critical error in AI Smart Trading Bot: {str(e)}", exc_info=True)
+        raise
 
 if __name__ == "__main__":
-    bot = TradingBot()
-    try:
-        bot.run("AAPL")  # Example: trading Apple stock
-    except KeyboardInterrupt:
-        bot.stop()
+    main()

@@ -13,7 +13,7 @@ class DataFetcher:
                 'apiKey': config.binance_credentials['api_key'],
                 'secret': config.binance_credentials['secret_key']
             }),
-            'coinbase': ccxt.coinbasepro({
+            'coinbase': ccxt.coinbase({
                 'apiKey': config.coinbase_credentials['api_key'],
                 'secret': config.coinbase_credentials['secret_key']
             })

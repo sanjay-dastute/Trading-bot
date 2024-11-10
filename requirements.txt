@@ -86,3 +86,5 @@ wrapt==1.16.0
 yarl==1.17.1
 yfinance==0.2.48
 zipp==3.21.0
+scikit-learn>=1.0.2
+xgboost>=1.5.0
