@@ -1,118 +1,61 @@
-import dash
-from dash import dcc, html
-from dash.dependencies import Input, Output
-import plotly.graph_objs as go
-import pandas as pd
-from datetime import datetime, timedelta
 import sys
 import os
+import logging
+
+# Configure logging
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 # Add parent directory to path for imports
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+current_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.dirname(os.path.dirname(current_dir))
+sys.path.append(project_root)
 
-from core.config import Config
-from data.data_fetcher import DataFetcher
-from strategies.ai_strategy import AITradingStrategy
+try:
+    from core.config import Config
+    from core.trader import SmartTrader
+    from core.exchange_selector import ExchangeSelector
+    from data.data_fetcher import DataFetcher
+    from dashboard.trading_dashboard import TradingDashboard
+except ImportError as e:
+    logger.error(f"Failed to import required modules: {str(e)}")
+    raise
 
-# Initialize components
-config = Config()
-data_fetcher = DataFetcher(config)
-strategy = AITradingStrategy(config)
+def main():
+    try:
+        logger.info("Initializing AI Smart Trading Bot Dashboard...")
 
-# Initialize Dash app
-app = dash.Dash(__name__)
+        # Initialize components
+        logger.debug("Creating configuration...")
+        config = Config()
 
-app.layout = html.Div([
-    html.H1("AI Trading Bot Dashboard"),
+        logger.debug("Initializing data fetcher...")
+        data_fetcher = DataFetcher(config)
 
-    # Symbol input
-    html.Div([
-        html.Label("Trading Symbol:"),
-        dcc.Input(id='symbol-input', value='AAPL', type='text'),
-        html.Button('Update', id='submit-button', n_clicks=0)
-    ]),
+        logger.debug("Initializing trader...")
+        trader = SmartTrader(config)
 
-    # Main price chart
-    dcc.Graph(id='price-chart'),
+        logger.debug("Initializing exchange selector...")
+        exchange_selector = ExchangeSelector(config, data_fetcher)
 
-    # Trading statistics
-    html.Div([
-        html.H3("Trading Statistics"),
-        html.Div(id='trading-stats')
-    ]),
+        # Initialize dashboard with components
+        logger.debug("Creating dashboard...")
+        dashboard = TradingDashboard(
+            trader=trader,
+            data_fetcher=data_fetcher,
+            exchange_selector=exchange_selector
+        )
 
-    # Auto-refresh
-    dcc.Interval(
-        id='interval-component',
-        interval=60*1000,  # in milliseconds
-        n_intervals=0
-    )
-])
+        # Expose port for user access
+        logger.info("Starting dashboard server...")
+        dashboard.run(debug=True, host='0.0.0.0', port=8050)
 
-@app.callback(
-    [Output('price-chart', 'figure'),
-     Output('trading-stats', 'children')],
-    [Input('interval-component', 'n_intervals'),
-     Input('submit-button', 'n_clicks')],
-    [dash.dependencies.State('symbol-input', 'value')]
-)
-def update_data(n_intervals, n_clicks, symbol):
-    # Fetch historical data
-    df = data_fetcher.get_historical_data(symbol, limit=100)
-
-    # Generate trading signals
-    df_with_signals = strategy.generate_signals(df)
-
-    # Create price chart
-    fig = go.Figure()
-
-    # Add candlestick chart
-    fig.add_trace(go.Candlestick(
-        x=df.index,
-        open=df['Open'],
-        high=df['High'],
-        low=df['Low'],
-        close=df['Close'],
-        name='Price'
-    ))
-
-    # Add signals if available
-    if 'signal' in df_with_signals.columns:
-        buy_signals = df_with_signals[df_with_signals['signal'] == 1]
-        sell_signals = df_with_signals[df_with_signals['signal'] == -1]
-
-        fig.add_trace(go.Scatter(
-            x=buy_signals.index,
-            y=buy_signals['Close'],
-            mode='markers',
-            marker=dict(symbol='triangle-up', size=15, color='green'),
-            name='Buy Signal'
-        ))
-
-        fig.add_trace(go.Scatter(
-            x=sell_signals.index,
-            y=sell_signals['Close'],
-            mode='markers',
-            marker=dict(symbol='triangle-down', size=15, color='red'),
-            name='Sell Signal'
-        ))
-
-    # Update layout
-    fig.update_layout(
-        title=f'{symbol} Price Chart',
-        yaxis_title='Price',
-        xaxis_title='Date',
-        template='plotly_dark'
-    )
-
-    # Calculate statistics
-    stats = html.Div([
-        html.P(f"Current Price: ${df['Close'].iloc[-1]:.2f}"),
-        html.P(f"Daily Change: {((df['Close'].iloc[-1] - df['Close'].iloc[-2]) / df['Close'].iloc[-2] * 100):.2f}%"),
-        html.P(f"Volume: {df['Volume'].iloc[-1]:,.0f}")
-    ])
-
-    return fig, stats
+    except Exception as e:
+        logger.error(f"Failed to start dashboard: {str(e)}", exc_info=True)
+        raise
 
 if __name__ == '__main__':
-    app.run_server(debug=True, host='0.0.0.0', port=8050)
+    main()
