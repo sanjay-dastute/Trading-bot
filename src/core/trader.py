@@ -1,6 +1,7 @@
 import logging
 from typing import Dict, Any
 import pandas as pd
+import numpy as np
 from src.models.ensemble_model import EnsembleModel
 from src.data.data_fetcher import DataFetcher
 
@@ -194,8 +195,80 @@ class SmartTrader:
         return {
             'daily_stats': self.daily_stats,
             'current_positions': self.current_positions,
-            'portfolio_value': self._get_portfolio_value()
+            'portfolio_value': self._get_portfolio_value(),
+            'current_process': self.get_current_process()
         }
+
+    def get_current_process(self) -> Dict[str, Any]:
+        """Get current trading process information"""
+        try:
+            processes = []
+            for symbol, position in self.current_positions.items():
+                current_price = self.data_fetcher.get_realtime_price(
+                    symbol, position['exchange']
+                )
+                profit_loss = (current_price - position['entry_price']) * position['size']
+                process = {
+                    'symbol': symbol,
+                    'exchange': position['exchange'],
+                    'action': position['action'],
+                    'entry_price': position['entry_price'],
+                    'current_price': current_price,
+                    'size': position['size'],
+                    'profit_loss': profit_loss,
+                    'stop_loss': position['stop_loss'],
+                    'take_profit': position['take_profit'],
+                    'status': 'active',
+                    'timestamp': pd.Timestamp.now().isoformat()
+                }
+                processes.append(process)
+
+            return {
+                'active_processes': processes,
+                'total_positions': len(processes),
+                'last_update': pd.Timestamp.now().isoformat(),
+                'status': 'running' if processes else 'idle'
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to get current process: {str(e)}")
+            return {
+                'active_processes': [],
+                'total_positions': 0,
+                'last_update': pd.Timestamp.now().isoformat(),
+                'status': 'error',
+                'error': str(e)
+            }
+
+    def get_process_updates(self) -> List[str]:
+        """Get latest trading process updates"""
+        try:
+            updates = []
+            for symbol, position in self.current_positions.items():
+                current_price = self.data_fetcher.get_realtime_price(
+                    symbol, position['exchange']
+                )
+                profit_loss = (current_price - position['entry_price']) * position['size']
+
+                # Add relevant updates
+                updates.append(
+                    f"Position: {symbol} on {position['exchange'].upper()}, "
+                    f"Action: {position['action'].upper()}, "
+                    f"Size: {position['size']}, "
+                    f"P/L: ${profit_loss:.2f}"
+                )
+
+                # Add risk management updates
+                if current_price <= position['stop_loss']:
+                    updates.append(f"⚠️ Stop loss triggered for {symbol}")
+                elif current_price >= position['take_profit']:
+                    updates.append(f"✅ Take profit reached for {symbol}")
+
+            return updates
+
+        except Exception as e:
+            logger.error(f"Failed to get process updates: {str(e)}")
+            return [f"Error getting updates: {str(e)}"]
 
     def _get_portfolio_value(self) -> float:
         """Get current portfolio value"""
@@ -252,7 +325,7 @@ class SmartTrader:
 
             # Calculate volatility as standard deviation of returns
             returns = pd.Series(data['close']).pct_change().dropna()
-            return returns.std()
+            return float(returns.std())
 
         except Exception as e:
             logger.error(f"Failed to calculate volatility: {str(e)}")
@@ -262,17 +335,16 @@ class SmartTrader:
         """Check if multiple timeframes show aligned trend"""
         try:
             # Calculate EMAs for different timeframes
-            data['EMA20'] = data['close'].ewm(span=20).mean()
-            data['EMA50'] = data['close'].ewm(span=50).mean()
-            data['EMA200'] = data['close'].ewm(span=200).mean()
+            data['ema_short'] = data['close'].ewm(span=20, adjust=False).mean()
+            data['ema_medium'] = data['close'].ewm(span=50, adjust=False).mean()
+            data['ema_long'] = data['close'].ewm(span=200, adjust=False).mean()
 
-            # Check trend alignment
-            current_price = data['close'].iloc[-1]
-            return all([
-                current_price > data['EMA20'].iloc[-1],
-                data['EMA20'].iloc[-1] > data['EMA50'].iloc[-1],
-                data['EMA50'].iloc[-1] > data['EMA200'].iloc[-1]
-            ])
+            # Check if EMAs are aligned (short above medium above long for uptrend)
+            last_row = data.iloc[-1]
+            return (
+                last_row['ema_short'] > last_row['ema_medium'] > last_row['ema_long'] or
+                last_row['ema_short'] < last_row['ema_medium'] < last_row['ema_long']
+            )
 
         except Exception as e:
             logger.error(f"Failed to check trend alignment: {str(e)}")
@@ -281,37 +353,41 @@ class SmartTrader:
     def _normalize_data(self, data: pd.DataFrame) -> pd.DataFrame:
         """Normalize data for model input"""
         try:
-            df = data.copy()
+            # Select features for normalization
+            features = ['close', 'volume', 'MA20', 'MA50', 'RSI']
 
-            # Calculate returns instead of using raw prices
-            df['returns'] = df['close'].pct_change()
+            # Create copy of data
+            normalized = data.copy()
 
-            # Normalize technical indicators
-            for column in ['volume', 'MA20', 'MA50', 'RSI']:
-                if column in df.columns:
-                    df[column] = (df[column] - df[column].mean()) / df[column].std()
+            # Normalize each feature
+            for feature in features:
+                if feature in normalized.columns:
+                    mean = normalized[feature].mean()
+                    std = normalized[feature].std()
+                    normalized[feature] = (normalized[feature] - mean) / std
 
-            return df.fillna(0)
+            return normalized
 
         except Exception as e:
             logger.error(f"Failed to normalize data: {str(e)}")
             return data
 
-    def _prepare_sequences(self, data: pd.DataFrame) -> pd.DataFrame:
+    def _prepare_sequences(self, data: pd.DataFrame) -> np.ndarray:
         """Prepare sequences for model input"""
         try:
-            # Select features for model input
-            features = ['returns', 'volume', 'MA20', 'MA50', 'RSI']
-            sequence_length = 50  # Last 50 timeframes
+            # Select features
+            features = ['close', 'volume', 'MA20', 'MA50', 'RSI']
 
             # Create sequences
+            sequence_length = 100
             sequences = []
+
             for i in range(len(data) - sequence_length + 1):
                 sequence = data[features].iloc[i:(i + sequence_length)].values
                 sequences.append(sequence)
 
-            return pd.DataFrame(sequences[-1:])  # Return only the latest sequence
+            return np.array(sequences)
 
         except Exception as e:
             logger.error(f"Failed to prepare sequences: {str(e)}")
-            return pd.DataFrame()
+            return np.array([])
