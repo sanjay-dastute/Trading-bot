@@ -21,6 +21,7 @@ class BaseExchange(ABC):
             config: Configuration dictionary including optional encryption password
         """
         self.exchange_id = exchange_id
+        self.name = exchange_id  # Add name attribute
         self.config = config
         self.exchange: Optional[ccxt.Exchange] = None
         self.logger = logging.getLogger(__name__)
@@ -35,9 +36,22 @@ class BaseExchange(ABC):
             exchange_class = getattr(ccxt, self.exchange_id)
             self.exchange = exchange_class({
                 'apiKey': api_credentials.get('api_key'),
-                'secret': api_credentials.get('secret_key'),
+                'secret': api_credentials.get('secret'),
                 'password': api_credentials.get('passphrase', ''),
                 'enableRateLimit': True,
+                'options': {
+                    'defaultType': 'spot',
+                    'adjustForTimeDifference': True,
+                    'recvWindow': 60000,
+                },
+                'headers': {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                },
+                # Add proxy support for location-restricted APIs
+                'proxies': {
+                    'http': self.config.get('http_proxy', ''),
+                    'https': self.config.get('https_proxy', '')
+                } if self.config.get('use_proxy') else None
             })
             await self.exchange.load_markets()
             return True
@@ -57,15 +71,15 @@ class BaseExchange(ABC):
                 if keys:
                     return {
                         'api_key': keys.get('api_key'),
-                        'secret_key': keys.get('secret_key'),
+                        'secret': keys.get('secret'),  # Changed to match config naming
                         'passphrase': keys.get('passphrase')
                     }
 
-            # Fall back to config-based keys for backward compatibility
+            # Fall back to config-based keys
             return {
                 'api_key': self.config.get('api_key'),
-                'secret_key': self.config.get('api_secret'),
-                'passphrase': self.config.get('api_password')
+                'secret': self.config.get('secret'),  # Changed to match config naming
+                'passphrase': self.config.get('passphrase')
             }
         except Exception as e:
             self.logger.error(f"Failed to get API credentials: {str(e)}")
@@ -148,26 +162,58 @@ class BaseExchange(ABC):
             self.logger.error(f"Failed to fetch OHLCV data: {str(e)}")
             return []
 
-    async def get_market_info(self, symbol: str) -> Dict:
-        """Get detailed market information"""
+    async def get_market_info(self, symbol: str) -> dict:
+        """Get market information for a symbol"""
         try:
-            market = self.exchange.market(symbol)
-            ticker = await self.get_ticker(symbol)
-            order_book = await self.get_order_book(symbol)
+            # Try to get market info even if exchange is not initialized
+            if not hasattr(self, 'exchange') or self.exchange is None:
+                await self.initialize()
 
-            return {
-                'symbol': symbol,
-                'base': market['base'],
-                'quote': market['quote'],
-                'active': market['active'],
-                'precision': market['precision'],
-                'limits': market['limits'],
-                'ticker': ticker,
-                'orderbook': order_book
-            }
+            if not self.exchange:
+                self.logger.error("Exchange not initialized")
+                return {
+                    'symbol': symbol,
+                    'base': symbol.split('/')[0],
+                    'quote': symbol.split('/')[1],
+                    'active': False,
+                    'info': {'error': 'Exchange not initialized'}
+                }
+
+            try:
+                # Try to get market info from exchange
+                market = self.exchange.market(symbol)
+                if market:
+                    return {
+                        'symbol': market.get('symbol', symbol),
+                        'base': market.get('base', symbol.split('/')[0]),
+                        'quote': market.get('quote', symbol.split('/')[1]),
+                        'active': market.get('active', True),
+                        'precision': market.get('precision', {'price': 8, 'amount': 8}),
+                        'limits': market.get('limits', {'amount': {'min': 0.0001}}),
+                        'info': market.get('info', {})
+                    }
+            except Exception as e:
+                self.logger.warning(f"Failed to get market info from exchange: {str(e)}")
+                # Return basic market info if exchange call fails
+                return {
+                    'symbol': symbol,
+                    'base': symbol.split('/')[0],
+                    'quote': symbol.split('/')[1],
+                    'active': True,
+                    'precision': {'price': 8, 'amount': 8},
+                    'limits': {'amount': {'min': 0.0001}},
+                    'info': {'error': str(e)}
+                }
+
         except Exception as e:
             self.logger.error(f"Failed to get market info: {str(e)}")
-            return {}
+            return {
+                'symbol': symbol,
+                'base': symbol.split('/')[0],
+                'quote': symbol.split('/')[1],
+                'active': False,
+                'info': {'error': str(e)}
+            }
 
     async def calculate_risk_metrics(self, symbol: str) -> Dict:
         """Calculate risk metrics for zero-loss trading"""
